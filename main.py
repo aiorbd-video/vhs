@@ -4,11 +4,25 @@ import hmac
 import hashlib
 import logging
 from aiohttp import web
-from pyrogram import Client
+from pyrogram import Client, utils # utils ইম্পোর্ট করা হয়েছে
 from dotenv import load_dotenv
 
-# .env ফাইল থেকে সিকিউর ডেটা লোড করা হচ্ছে
+#.env ফাইল থেকে সিকিউর ডেটা লোড করা হচ্ছে
 load_dotenv()
+
+# ==========================================
+# 0. Pyrogram 64-bit Channel ID Bug Monkey Patch 🚀
+# ==========================================
+def get_peer_type_new(peer_id: int) -> str:
+    peer_id_str = str(peer_id)
+    if not peer_id_str.startswith("-"):
+        return "user"
+    elif peer_id_str.startswith("-100"):
+        return "channel"
+    else:
+        return "chat"
+
+utils.get_peer_type = get_peer_type_new
 
 # ==========================================
 # 1. Environment Variables & Configuration
@@ -24,18 +38,18 @@ ALLOWED_ORIGIN = os.getenv("ALLOWED_ORIGIN", "*")
 ADMIN_PASS = os.getenv("ADMIN_PASS", "admin123") 
 
 logging.basicConfig(level=logging.INFO)
-tg_app = Client("enterprise_stream", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+
+# ইন-মেমোরি সেশন ব্যবহার করা হচ্ছে ক্লাউড হোস্টিংয়ের জন্য
+tg_app = Client("enterprise_stream", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, in_memory=True)
 
 # ==========================================
-# 2. Signature Generator (IP Lock Removed 🚀)
+# 2. Signature Generator (IP Lock Removed)
 # ==========================================
 def generate_secure_signature(message_id, expire_time):
-    # এখানে user_ip বাদ দেওয়া হয়েছে, শুধু সময় দিয়ে লক হবে
     data = f"{message_id}:{expire_time}".encode()
     return hmac.new(SECRET_KEY, data, hashlib.sha256).hexdigest()
 
 def verify_signature(message_id, expire_time, provided_sig):
-    # সময় পার হয়ে গেলে ব্লক করবে
     if int(time.time()) > int(expire_time):
         return False 
     expected_sig = generate_secure_signature(message_id, expire_time)
@@ -48,7 +62,7 @@ async def generate_link_handler(request):
     msg_id = request.query.get("id")
     password = request.query.get("pass")
     
-    if password != ADMIN_PASS:
+    if password!= ADMIN_PASS:
         return web.json_response({"error": "Unauthorized"}, status=401)
     
     if not msg_id:
@@ -66,14 +80,14 @@ async def stream_handler(request):
     try:
         origin = request.headers.get("Origin") or request.headers.get("Referer", "")
         
-        if ALLOWED_ORIGIN != "*" and request.headers.get("Sec-Fetch-Mode") in ["cors", "no-cors"] and ALLOWED_ORIGIN not in origin:
+        if ALLOWED_ORIGIN!= "*" and request.headers.get("Sec-Fetch-Mode") in ["cors", "no-cors"] and ALLOWED_ORIGIN not in origin:
              return web.Response(status=403, text="403 Forbidden: Protected Origin.")
 
         message_id = int(request.match_info.get('message_id'))
         expire = request.query.get("expire")
         sig = request.query.get("sig")
 
-        # 🚀 এখানে IP মেলানোর শর্ত বাদ দেওয়া হয়েছে, শুধু সিগনেচার আর এক্সপায়ার টাইম দেখবে
+        # এখানে IP মেলানোর শর্ত বাদ দিয়ে শুধু সিগনেচার আর এক্সপায়ার টাইম দেখা হচ্ছে
         if not expire or not sig or not verify_signature(message_id, expire, sig):
             return web.Response(status=403, text="403 Forbidden: Token Expired or Invalid Signature.")
 
@@ -89,7 +103,7 @@ async def stream_handler(request):
 
         if range_header:
             ranges = range_header.replace("bytes=", "").split("-")
-            start = int(ranges[0]) if ranges[0] else 0
+            start = int(ranges) if ranges else 0
             end = int(ranges[1]) if len(ranges) > 1 and ranges[1] else file_size - 1
 
         chunk_size = (end - start) + 1
@@ -98,7 +112,7 @@ async def stream_handler(request):
             "Accept-Ranges": "bytes",
             "Content-Range": f"bytes {start}-{end}/{file_size}",
             "Content-Length": str(chunk_size),
-            "Access-Control-Allow-Origin": "*", # CORS ইস্যু যাতে না হয়
+            "Access-Control-Allow-Origin": "*",
         }
 
         response = web.StreamResponse(status=206 if range_header else 200, headers=headers)
