@@ -13,7 +13,6 @@ load_dotenv()
 # ==========================================
 # 1. Environment Variables & Configuration
 # ==========================================
-# কোডের ভেতরে কোনো আসল ডেটা নেই, সবকিছু .env থেকে আসবে
 API_ID = int(os.getenv("API_ID", 0))
 API_HASH = os.getenv("API_HASH", "")
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
@@ -28,22 +27,18 @@ logging.basicConfig(level=logging.INFO)
 tg_app = Client("enterprise_stream", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
 # ==========================================
-# 2. IP & Signature Generator
+# 2. Signature Generator (IP Lock Removed 🚀)
 # ==========================================
-def get_client_ip(request):
-    forwarded_for = request.headers.get("X-Forwarded-For")
-    if forwarded_for:
-        return forwarded_for.split(",")[0].strip()
-    return request.remote
-
-def generate_secure_signature(message_id, expire_time, user_ip):
-    data = f"{message_id}:{expire_time}:{user_ip}".encode()
+def generate_secure_signature(message_id, expire_time):
+    # এখানে user_ip বাদ দেওয়া হয়েছে, শুধু সময় দিয়ে লক হবে
+    data = f"{message_id}:{expire_time}".encode()
     return hmac.new(SECRET_KEY, data, hashlib.sha256).hexdigest()
 
-def verify_signature(message_id, expire_time, user_ip, provided_sig):
+def verify_signature(message_id, expire_time, provided_sig):
+    # সময় পার হয়ে গেলে ব্লক করবে
     if int(time.time()) > int(expire_time):
         return False 
-    expected_sig = generate_secure_signature(message_id, expire_time, user_ip)
+    expected_sig = generate_secure_signature(message_id, expire_time)
     return hmac.compare_digest(expected_sig, provided_sig)
 
 # ==========================================
@@ -52,16 +47,15 @@ def verify_signature(message_id, expire_time, user_ip, provided_sig):
 async def generate_link_handler(request):
     msg_id = request.query.get("id")
     password = request.query.get("pass")
-    target_ip = request.query.get("client_ip")
     
     if password != ADMIN_PASS:
         return web.json_response({"error": "Unauthorized"}, status=401)
     
-    if not msg_id or not target_ip:
-        return web.json_response({"error": "Message ID and Client IP are required"}, status=400)
+    if not msg_id:
+        return web.json_response({"error": "Message ID is required"}, status=400)
     
-    expire_time = int(time.time()) + 10800 
-    signature = generate_secure_signature(msg_id, expire_time, target_ip)
+    expire_time = int(time.time()) + 10800 # ৩ ঘণ্টা মেয়াদ
+    signature = generate_secure_signature(msg_id, expire_time)
     
     base_url = f"{request.scheme}://{request.host}"
     secure_url = f"{base_url}/stream/{msg_id}?expire={expire_time}&sig={signature}"
@@ -70,7 +64,6 @@ async def generate_link_handler(request):
 
 async def stream_handler(request):
     try:
-        current_user_ip = get_client_ip(request)
         origin = request.headers.get("Origin") or request.headers.get("Referer", "")
         
         if ALLOWED_ORIGIN != "*" and request.headers.get("Sec-Fetch-Mode") in ["cors", "no-cors"] and ALLOWED_ORIGIN not in origin:
@@ -80,8 +73,9 @@ async def stream_handler(request):
         expire = request.query.get("expire")
         sig = request.query.get("sig")
 
-        if not expire or not sig or not verify_signature(message_id, expire, current_user_ip, sig):
-            return web.Response(status=403, text="403 Forbidden: IP Mismatch or Token Expired.")
+        # 🚀 এখানে IP মেলানোর শর্ত বাদ দেওয়া হয়েছে, শুধু সিগনেচার আর এক্সপায়ার টাইম দেখবে
+        if not expire or not sig or not verify_signature(message_id, expire, sig):
+            return web.Response(status=403, text="403 Forbidden: Token Expired or Invalid Signature.")
 
         message = await tg_app.get_messages(CHANNEL_ID, message_id)
         if not message or not (message.video or message.document):
@@ -104,7 +98,7 @@ async def stream_handler(request):
             "Accept-Ranges": "bytes",
             "Content-Range": f"bytes {start}-{end}/{file_size}",
             "Content-Length": str(chunk_size),
-            "Access-Control-Allow-Origin": ALLOWED_ORIGIN,
+            "Access-Control-Allow-Origin": "*", # CORS ইস্যু যাতে না হয়
         }
 
         response = web.StreamResponse(status=206 if range_header else 200, headers=headers)
