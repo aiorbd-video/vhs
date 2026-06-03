@@ -6,395 +6,313 @@ import hashlib
 import logging
 
 from aiohttp import web
+
 from telethon import TelegramClient
+
 from telethon.sessions import StringSession
 
-# =========================================
+# ====================================
 # CONFIG
-# =========================================
+# ====================================
 
-API_ID = int(os.getenv("API_ID"))
-API_HASH = os.getenv("API_HASH")
+API_ID = int(
+    os.getenv("API_ID")
+)
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+API_HASH = os.getenv(
+    "API_HASH"
+)
 
-CHANNEL_ID = int(os.getenv("CHANNEL_ID"))
+SESSION_STRING = os.getenv(
+    "SESSION_STRING"
+)
 
-SESSION_STRING = os.getenv("SESSION_STRING")
+CHANNEL_ID = int(
+    os.getenv("CHANNEL_ID")
+)
 
 SECRET_KEY = os.getenv(
     "SECRET_KEY",
-    "super-secret"
-).encode()
-
-ALLOWED_ORIGIN = os.getenv(
-    "ALLOWED_ORIGIN",
-    "*"
+    "secret_key"
 )
 
-PORT = int(os.getenv("PORT", 8080))
+PORT = int(
+    os.getenv("PORT", 8080)
+)
 
-TOKEN_EXPIRE = 300  # 5 minutes
+logging.basicConfig(
+    level=logging.INFO
+)
 
-logging.basicConfig(level=logging.INFO)
-
-# =========================================
+# ====================================
 # TELEGRAM CLIENT
-# =========================================
+# ====================================
 
-tg = TelegramClient(
-    StringSession(SESSION_STRING),
+client = TelegramClient(
+    StringSession(
+        SESSION_STRING
+    ),
     API_ID,
     API_HASH
 )
 
-# =========================================
-# TOKEN CREATE
-# =========================================
+# ====================================
+# TOKEN GENERATOR
+# ====================================
 
-def create_token(video_id, ip, ua):
+def generate_token(message_id):
 
-    expire = int(time.time()) + TOKEN_EXPIRE
+    expire =
+        int(time.time()) + 3600
 
-    payload = f"{video_id}|{ip}|{ua}|{expire}"
+    raw =
+        f"{message_id}:{expire}"
 
-    sig = hmac.new(
-        SECRET_KEY,
-        payload.encode(),
-        hashlib.sha256
-    ).hexdigest()
-
-    token = base64.urlsafe_b64encode(
-        f"{payload}|{sig}".encode()
-    ).decode()
-
-    return token
-
-# =========================================
-# TOKEN VERIFY
-# =========================================
-
-def verify_token(token, request_ip, request_ua):
-
-    try:
-
-        decoded = base64.urlsafe_b64decode(
-            token.encode()
-        ).decode()
-
-        parts = decoded.split("|")
-
-        if len(parts) != 5:
-            return None
-
-        video_id = parts[0]
-        ip = parts[1]
-        ua = parts[2]
-        expire = parts[3]
-        sig = parts[4]
-
-        # EXPIRE CHECK
-
-        if int(time.time()) > int(expire):
-            return None
-
-        # IP LOCK
-
-        if ip != request_ip:
-            return None
-
-        # USER AGENT LOCK
-
-        if ua != request_ua:
-            return None
-
-        # SIGNATURE VERIFY
-
-        payload = f"{video_id}|{ip}|{ua}|{expire}"
-
-        expected_sig = hmac.new(
-            SECRET_KEY,
-            payload.encode(),
+    signature =
+        hmac.new(
+            SECRET_KEY.encode(),
+            raw.encode(),
             hashlib.sha256
         ).hexdigest()
 
-        if not hmac.compare_digest(
-            expected_sig,
-            sig
-        ):
-            return None
+    token =
+        base64.urlsafe_b64encode(
+            f"{raw}:{signature}".encode()
+        ).decode()
 
-        return video_id
+    return token
 
-    except:
-        return None
+# ====================================
+# VERIFY TOKEN
+# ====================================
 
-# =========================================
-# GENERATE STREAM LINK
-# =========================================
-
-async def generate_link(request):
+def verify_token(token):
 
     try:
 
-        video_id = request.query.get("id")
+        decoded =
+            base64.urlsafe_b64decode(
+                token
+            ).decode()
 
-        if not video_id:
-            return web.json_response(
-                {"error": "Missing video id"},
-                status=400
-            )
+        message_id, expire, sig =
+            decoded.split(':')
 
-        # REAL USER IP
+        raw =
+            f"{message_id}:{expire}"
 
-        ip = (
-            request.headers.get(
-                "CF-Connecting-IP"
-            )
-            or request.remote
-        )
+        expected =
+            hmac.new(
+                SECRET_KEY.encode(),
+                raw.encode(),
+                hashlib.sha256
+            ).hexdigest()
 
-        # USER AGENT
+        if expected != sig:
+            return None
 
-        ua = request.headers.get(
-            "User-Agent",
-            ""
-        )
+        if int(expire) < int(time.time()):
+            return None
 
-        token = create_token(
-            video_id,
-            ip,
-            ua
-        )
+        return int(message_id)
 
-        # FORCE HTTPS
+    except Exception:
+        return None
 
-        base = f"https://{request.host}"
+# ====================================
+# GENERATE STREAM URL
+# ====================================
 
-        url = f"{base}/stream?token={token}"
+async def generate(request):
+
+    message_id =
+        request.query.get("id")
+
+    if not message_id:
 
         return web.json_response({
-            "status": "success",
-            "url": url
+            "status": "error",
+            "message": "No ID"
         })
 
-    except Exception as e:
+    token =
+        generate_token(
+            message_id
+        )
 
-        logging.exception("GENERATE ERROR")
+    url =
+        f"{request.scheme}://{request.host}/stream?token={token}"
 
-        return web.json_response({
-            "error": str(e)
-        }, status=500)
+    return web.json_response({
 
-# =========================================
-# STREAM HANDLER
-# =========================================
+        "status": "success",
+
+        "url": url
+    })
+
+# ====================================
+# STREAM VIDEO
+# ====================================
 
 async def stream(request):
 
+    token =
+        request.query.get("token")
+
+    if not token:
+
+        return web.Response(
+            status=403,
+            text="No token"
+        )
+
+    message_id =
+        verify_token(token)
+
+    if not message_id:
+
+        return web.Response(
+            status=403,
+            text="Invalid token"
+        )
+
     try:
 
-        # OPTIONAL HOTLINK PROTECTION
-
-        origin = (
-            request.headers.get("Origin")
-            or request.headers.get(
-                "Referer",
-                ""
+        message =
+            await client.get_messages(
+                CHANNEL_ID,
+                ids=message_id
             )
-        )
 
         if (
-            ALLOWED_ORIGIN != "*"
-            and ALLOWED_ORIGIN not in origin
-            and origin != ""
+            not message
+            or not message.media
         ):
+
             return web.Response(
-                status=403,
-                text="Forbidden Origin"
+                status=404,
+                text="Video not found"
             )
 
-        # TOKEN
+        file_size =
+            message.file.size
 
-        token = request.query.get("token")
-
-        if not token:
-            return web.Response(
-                status=403,
-                text="Missing Token"
-            )
-
-        # REAL USER IP
-
-        ip = (
+        range_header =
             request.headers.get(
-                "CF-Connecting-IP"
+                'Range',
+                None
             )
-            or request.remote
-        )
-
-        # USER AGENT
-
-        ua = request.headers.get(
-            "User-Agent",
-            ""
-        )
-
-        # VERIFY TOKEN
-
-        video_id = verify_token(
-            token,
-            ip,
-            ua
-        )
-
-        if not video_id:
-            return web.Response(
-                status=403,
-                text="Invalid or Expired Token"
-            )
-
-        # GET TELEGRAM MESSAGE
-
-        msg = await tg.get_messages(
-            CHANNEL_ID,
-            ids=int(video_id)
-        )
-
-        if not msg:
-            return web.Response(
-                status=404,
-                text="Message Not Found"
-            )
-
-        if not msg.media:
-            return web.Response(
-                status=404,
-                text="Media Not Found"
-            )
-
-        file_size = msg.file.size
-
-        # =====================================
-        # RANGE SUPPORT
-        # =====================================
-
-        range_header = request.headers.get(
-            "Range",
-            ""
-        )
 
         start = 0
         end = file_size - 1
 
+        # ===============================
+        # RANGE SUPPORT
+        # ===============================
+
         if range_header:
 
-            range_data = (
-                range_header
-                .replace("bytes=", "")
-                .split("-")
-            )
+            bytes_range =
+                range_header.replace(
+                    'bytes=',
+                    ''
+                )
 
-            if range_data[0]:
-                start = int(range_data[0])
+            start_str, end_str =
+                bytes_range.split('-')
 
-            if (
-                len(range_data) > 1
-                and range_data[1]
-            ):
-                end = int(range_data[1])
+            start =
+                int(start_str)
 
-        chunk_size = (
-            end - start
-        ) + 1
+            if end_str:
 
-        # =====================================
-        # RESPONSE HEADERS
-        # =====================================
+                end =
+                    int(end_str)
+
+        chunk_size =
+            (end - start) + 1
 
         headers = {
 
-            "Content-Type":
-            "video/mp4",
+            'Content-Type':
+            'video/mp4',
 
-            "Accept-Ranges":
-            "bytes",
+            'Accept-Ranges':
+            'bytes',
 
-            "Content-Length":
+            'Content-Length':
             str(chunk_size),
 
-            "Content-Range":
-            f"bytes {start}-{end}/{file_size}",
+            'Content-Range':
+            f'bytes {start}-{end}/{file_size}',
 
-            "Cache-Control":
-            "private, no-store",
-
-            "Access-Control-Allow-Origin":
-            ALLOWED_ORIGIN,
-
-            "X-Content-Type-Options":
-            "nosniff",
-
-            "Cross-Origin-Resource-Policy":
-            "cross-origin",
+            'Access-Control-Allow-Origin':
+            '*',
         }
 
-        status = (
-            206
-            if range_header
-            else 200
+        response =
+            web.StreamResponse(
+
+                status=206,
+
+                headers=headers
+            )
+
+        await response.prepare(
+            request
         )
-
-        response = web.StreamResponse(
-            status=status,
-            headers=headers
-        )
-
-        await response.prepare(request)
-
-        # =====================================
-        # STREAM DOWNLOAD
-        # =====================================
 
         downloaded = 0
 
-        async for chunk in tg.iter_download(
-            msg.media,
+        # ===============================
+        # FAST STREAM
+        # ===============================
+
+        async for chunk in client.iter_download(
+
+            message.media,
+
             offset=start,
-            request_size=1024 * 1024
+
+            request_size=1024*512
         ):
 
             if downloaded >= chunk_size:
                 break
 
-            remaining = (
-                chunk_size
-                - downloaded
+            if (
+                downloaded + len(chunk)
+                > chunk_size
+            ):
+
+                chunk =
+                    chunk[
+                        :chunk_size
+                        - downloaded
+                    ]
+
+            await response.write(
+                chunk
             )
 
-            if len(chunk) > remaining:
-                chunk = chunk[:remaining]
-
-            await response.write(chunk)
-
-            downloaded += len(chunk)
-
-        await response.write_eof()
+            downloaded += len(
+                chunk
+            )
 
         return response
 
     except Exception as e:
 
-        logging.exception("STREAM ERROR")
+        logging.error(str(e))
 
         return web.Response(
             status=500,
             text=str(e)
         )
 
-# =========================================
+# ====================================
 # HEALTH CHECK
-# =========================================
+# ====================================
 
 async def health(request):
 
@@ -402,47 +320,52 @@ async def health(request):
         "status": "running"
     })
 
-# =========================================
-# INIT APP
-# =========================================
+# ====================================
+# APP
+# ====================================
 
-async def init():
+app = web.Application()
+
+app.router.add_get(
+    '/',
+    health
+)
+
+app.router.add_get(
+    '/generate',
+    generate
+)
+
+app.router.add_get(
+    '/stream',
+    stream
+)
+
+# ====================================
+# STARTUP
+# ====================================
+
+async def startup(app):
 
     logging.info(
         "Starting Telegram Client..."
     )
 
-    await tg.start(
-        bot_token=BOT_TOKEN
+    await client.start()
+
+    logging.info(
+        "Telegram Client Started"
     )
 
-    app = web.Application(
-        client_max_size=1024**3
-    )
+app.on_startup.append(
+    startup
+)
 
-    app.router.add_get(
-        "/",
-        health
-    )
-
-    app.router.add_get(
-        "/generate",
-        generate_link
-    )
-
-    app.router.add_get(
-        "/stream",
-        stream
-    )
-
-    return app
-
-# =========================================
-# RUN SERVER
-# =========================================
+# ====================================
+# RUN
+# ====================================
 
 web.run_app(
-    init(),
-    host="0.0.0.0",
+    app,
     port=PORT
 )
