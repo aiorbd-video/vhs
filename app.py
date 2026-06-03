@@ -106,7 +106,7 @@ def verify_token(token):
         return None
 
 # =========================================
-# HEALTH CHECK
+# HEALTH
 # =========================================
 
 async def health(request):
@@ -116,7 +116,7 @@ async def health(request):
     })
 
 # =========================================
-# GENERATE STREAM LINK
+# GENERATE URL
 # =========================================
 
 async def generate(request):
@@ -127,7 +127,7 @@ async def generate(request):
 
         return web.json_response({
             "status": "error",
-            "message": "No message ID"
+            "message": "No ID"
         })
 
     token = generate_token(message_id)
@@ -135,7 +135,7 @@ async def generate(request):
     stream_url = (
         f"{request.scheme}://"
         f"{request.host}"
-        f"/stream?token={token}"
+        f"/video.mp4?token={token}"
     )
 
     return web.json_response({
@@ -146,7 +146,7 @@ async def generate(request):
     })
 
 # =========================================
-# OPTIONS HANDLER
+# OPTIONS
 # =========================================
 
 async def options_handler(request):
@@ -157,9 +157,11 @@ async def options_handler(request):
 
         headers={
 
-            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Origin":
+            "*",
 
-            "Access-Control-Allow-Headers": "*",
+            "Access-Control-Allow-Headers":
+            "*",
 
             "Access-Control-Allow-Methods":
             "GET, OPTIONS",
@@ -207,32 +209,28 @@ async def stream(request):
         file_size = message.file.size
 
         range_header = request.headers.get(
-            "Range",
-            None
+            "Range"
         )
 
         start = 0
         end = file_size - 1
 
         # =====================================
-        # RANGE SUPPORT
+        # RANGE PARSE
         # =====================================
 
         if range_header:
 
-            bytes_range = range_header.replace(
-                "bytes=",
-                ""
+            bytes_range = (
+                range_header
+                .replace("bytes=", "")
+                .split("-")
             )
 
-            start_str, end_str = (
-                bytes_range.split("-")
-            )
+            start = int(bytes_range[0])
 
-            start = int(start_str)
-
-            if end_str:
-                end = int(end_str)
+            if bytes_range[1]:
+                end = int(bytes_range[1])
 
         chunk_size = (
             end - start
@@ -268,17 +266,8 @@ async def stream(request):
             "Cross-Origin-Resource-Policy":
             "cross-origin",
 
-            "Cross-Origin-Embedder-Policy":
-            "unsafe-none",
-
-            "Cross-Origin-Opener-Policy":
-            "same-origin-allow-popups",
-
             "Cache-Control":
-            "no-cache",
-
-            "Connection":
-            "keep-alive",
+            "public, max-age=3600",
         }
 
         response = web.StreamResponse(
@@ -290,10 +279,10 @@ async def stream(request):
 
         await response.prepare(request)
 
-        downloaded = 0
+        current = start
 
         # =====================================
-        # FAST DOWNLOAD
+        # DOWNLOAD STREAM
         # =====================================
 
         async for chunk in client.iter_download(
@@ -302,24 +291,23 @@ async def stream(request):
 
             offset=start,
 
-            request_size=1024 * 512
+            request_size=1024 * 512,
         ):
 
-            if downloaded >= chunk_size:
+            if current > end:
                 break
 
-            if (
-                downloaded + len(chunk)
-                > chunk_size
-            ):
+            remaining = (
+                end - current
+            ) + 1
 
-                chunk = chunk[
-                    :chunk_size - downloaded
-                ]
+            if len(chunk) > remaining:
+
+                chunk = chunk[:remaining]
 
             await response.write(chunk)
 
-            downloaded += len(chunk)
+            current += len(chunk)
 
         await response.write_eof()
 
@@ -327,10 +315,14 @@ async def stream(request):
 
     except Exception as e:
 
-        logging.error(f"Streaming error: {e}")
+        logging.error(
+            f"Streaming error: {e}"
+        )
 
         return web.Response(
+
             status=500,
+
             text=str(e)
         )
 
@@ -360,11 +352,11 @@ app.router.add_get("/", health)
 
 app.router.add_get("/generate", generate)
 
-app.router.add_get("/stream", stream)
+app.router.add_get("/video.mp4", stream)
 
 app.router.add_route(
     "OPTIONS",
-    "/stream",
+    "/video.mp4",
     options_handler
 )
 
