@@ -9,27 +9,37 @@ from aiohttp import web
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 
-# ====================================
+# =========================================
 # CONFIG
-# ====================================
+# =========================================
 
-API_ID = int(os.getenv("API_ID"))
-API_HASH = os.getenv("API_HASH")
-SESSION_STRING = os.getenv("SESSION_STRING")
-CHANNEL_ID = int(os.getenv("CHANNEL_ID"))
+API_ID = int(os.getenv("API_ID", "0"))
+
+API_HASH = os.getenv("API_HASH", "")
+
+SESSION_STRING = os.getenv(
+    "SESSION_STRING",
+    ""
+)
+
+CHANNEL_ID = int(
+    os.getenv("CHANNEL_ID", "0")
+)
 
 SECRET_KEY = os.getenv(
     "SECRET_KEY",
     "secret_key"
 )
 
-PORT = int(os.getenv("PORT", 8080))
+PORT = int(
+    os.getenv("PORT", "8080")
+)
 
 logging.basicConfig(level=logging.INFO)
 
-# ====================================
+# =========================================
 # TELEGRAM CLIENT
-# ====================================
+# =========================================
 
 client = TelegramClient(
     StringSession(SESSION_STRING),
@@ -37,31 +47,31 @@ client = TelegramClient(
     API_HASH
 )
 
-# ====================================
+# =========================================
 # TOKEN GENERATOR
-# ====================================
+# =========================================
 
 def generate_token(message_id):
 
     expire = int(time.time()) + 3600
 
-    raw = f"{message_id}:{expire}"
+    raw_data = f"{message_id}:{expire}"
 
     signature = hmac.new(
         SECRET_KEY.encode(),
-        raw.encode(),
+        raw_data.encode(),
         hashlib.sha256
     ).hexdigest()
 
     token = base64.urlsafe_b64encode(
-        f"{raw}:{signature}".encode()
+        f"{raw_data}:{signature}".encode()
     ).decode()
 
     return token
 
-# ====================================
-# VERIFY TOKEN
-# ====================================
+# =========================================
+# TOKEN VERIFY
+# =========================================
 
 def verify_token(token):
 
@@ -73,15 +83,15 @@ def verify_token(token):
 
         message_id, expire, sig = decoded.split(':')
 
-        raw = f"{message_id}:{expire}"
+        raw_data = f"{message_id}:{expire}"
 
-        expected = hmac.new(
+        expected_sig = hmac.new(
             SECRET_KEY.encode(),
-            raw.encode(),
+            raw_data.encode(),
             hashlib.sha256
         ).hexdigest()
 
-        if expected != sig:
+        if expected_sig != sig:
             return None
 
         if int(expire) < int(time.time()):
@@ -89,12 +99,25 @@ def verify_token(token):
 
         return int(message_id)
 
-    except Exception:
+    except Exception as e:
+
+        logging.error(f"Token verify error: {e}")
+
         return None
 
-# ====================================
-# GENERATE STREAM URL
-# ====================================
+# =========================================
+# HEALTH CHECK
+# =========================================
+
+async def health(request):
+
+    return web.json_response({
+        "status": "running"
+    })
+
+# =========================================
+# GENERATE STREAM LINK
+# =========================================
 
 async def generate(request):
 
@@ -104,21 +127,48 @@ async def generate(request):
 
         return web.json_response({
             "status": "error",
-            "message": "No ID"
+            "message": "No message ID"
         })
 
     token = generate_token(message_id)
 
-    url = f"{request.scheme}://{request.host}/stream?token={token}"
+    stream_url = (
+        f"{request.scheme}://"
+        f"{request.host}"
+        f"/stream?token={token}"
+    )
 
     return web.json_response({
+
         "status": "success",
-        "url": url
+
+        "url": stream_url
     })
 
-# ====================================
+# =========================================
+# OPTIONS HANDLER
+# =========================================
+
+async def options_handler(request):
+
+    return web.Response(
+
+        status=200,
+
+        headers={
+
+            "Access-Control-Allow-Origin": "*",
+
+            "Access-Control-Allow-Headers": "*",
+
+            "Access-Control-Allow-Methods":
+            "GET, OPTIONS",
+        }
+    )
+
+# =========================================
 # STREAM VIDEO
-# ====================================
+# =========================================
 
 async def stream(request):
 
@@ -157,47 +207,84 @@ async def stream(request):
         file_size = message.file.size
 
         range_header = request.headers.get(
-            'Range',
+            "Range",
             None
         )
 
         start = 0
         end = file_size - 1
 
+        # =====================================
         # RANGE SUPPORT
+        # =====================================
 
         if range_header:
 
             bytes_range = range_header.replace(
-                'bytes=',
-                ''
+                "bytes=",
+                ""
             )
 
-            start_str, end_str = bytes_range.split('-')
+            start_str, end_str = (
+                bytes_range.split("-")
+            )
 
             start = int(start_str)
 
             if end_str:
                 end = int(end_str)
 
-        chunk_size = (end - start) + 1
+        chunk_size = (
+            end - start
+        ) + 1
+
+        # =====================================
+        # HEADERS
+        # =====================================
 
         headers = {
 
-            'Content-Type': 'video/mp4',
+            "Content-Type":
+            "video/mp4",
 
-            'Accept-Ranges': 'bytes',
+            "Accept-Ranges":
+            "bytes",
 
-            'Content-Length': str(chunk_size),
+            "Content-Length":
+            str(chunk_size),
 
-            'Content-Range':
-            f'bytes {start}-{end}/{file_size}',
+            "Content-Range":
+            f"bytes {start}-{end}/{file_size}",
 
-            'Access-Control-Allow-Origin': '*',
+            "Access-Control-Allow-Origin":
+            "*",
+
+            "Access-Control-Allow-Headers":
+            "*",
+
+            "Access-Control-Allow-Methods":
+            "GET, OPTIONS",
+
+            "Cross-Origin-Resource-Policy":
+            "cross-origin",
+
+            "Cross-Origin-Embedder-Policy":
+            "unsafe-none",
+
+            "Cross-Origin-Opener-Policy":
+            "same-origin-allow-popups",
+
+            "Cache-Control":
+            "no-cache",
+
+            "Connection":
+            "keep-alive",
         }
 
         response = web.StreamResponse(
-            status=206,
+
+            status=206 if range_header else 200,
+
             headers=headers
         )
 
@@ -205,16 +292,26 @@ async def stream(request):
 
         downloaded = 0
 
+        # =====================================
+        # FAST DOWNLOAD
+        # =====================================
+
         async for chunk in client.iter_download(
+
             message.media,
+
             offset=start,
+
             request_size=1024 * 512
         ):
 
             if downloaded >= chunk_size:
                 break
 
-            if downloaded + len(chunk) > chunk_size:
+            if (
+                downloaded + len(chunk)
+                > chunk_size
+            ):
 
                 chunk = chunk[
                     :chunk_size - downloaded
@@ -224,42 +321,22 @@ async def stream(request):
 
             downloaded += len(chunk)
 
+        await response.write_eof()
+
         return response
 
     except Exception as e:
 
-        logging.error(str(e))
+        logging.error(f"Streaming error: {e}")
 
         return web.Response(
             status=500,
             text=str(e)
         )
 
-# ====================================
-# HEALTH CHECK
-# ====================================
-
-async def health(request):
-
-    return web.json_response({
-        "status": "running"
-    })
-
-# ====================================
-# APP
-# ====================================
-
-app = web.Application()
-
-app.router.add_get('/', health)
-
-app.router.add_get('/generate', generate)
-
-app.router.add_get('/stream', stream)
-
-# ====================================
+# =========================================
 # STARTUP
-# ====================================
+# =========================================
 
 async def startup(app):
 
@@ -273,11 +350,29 @@ async def startup(app):
         "Telegram Client Started"
     )
 
+# =========================================
+# APP
+# =========================================
+
+app = web.Application()
+
+app.router.add_get("/", health)
+
+app.router.add_get("/generate", generate)
+
+app.router.add_get("/stream", stream)
+
+app.router.add_route(
+    "OPTIONS",
+    "/stream",
+    options_handler
+)
+
 app.on_startup.append(startup)
 
-# ====================================
+# =========================================
 # RUN
-# ====================================
+# =========================================
 
 web.run_app(
     app,
