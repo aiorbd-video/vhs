@@ -6,52 +6,33 @@ import hashlib
 import logging
 
 from aiohttp import web
-
 from telethon import TelegramClient
-
 from telethon.sessions import StringSession
 
 # ====================================
 # CONFIG
 # ====================================
 
-API_ID = int(
-    os.getenv("API_ID")
-)
-
-API_HASH = os.getenv(
-    "API_HASH"
-)
-
-SESSION_STRING = os.getenv(
-    "SESSION_STRING"
-)
-
-CHANNEL_ID = int(
-    os.getenv("CHANNEL_ID")
-)
+API_ID = int(os.getenv("API_ID"))
+API_HASH = os.getenv("API_HASH")
+SESSION_STRING = os.getenv("SESSION_STRING")
+CHANNEL_ID = int(os.getenv("CHANNEL_ID"))
 
 SECRET_KEY = os.getenv(
     "SECRET_KEY",
     "secret_key"
 )
 
-PORT = int(
-    os.getenv("PORT", 8080)
-)
+PORT = int(os.getenv("PORT", 8080))
 
-logging.basicConfig(
-    level=logging.INFO
-)
+logging.basicConfig(level=logging.INFO)
 
 # ====================================
 # TELEGRAM CLIENT
 # ====================================
 
 client = TelegramClient(
-    StringSession(
-        SESSION_STRING
-    ),
+    StringSession(SESSION_STRING),
     API_ID,
     API_HASH
 )
@@ -62,23 +43,19 @@ client = TelegramClient(
 
 def generate_token(message_id):
 
-    expire =
-        int(time.time()) + 3600
+    expire = int(time.time()) + 3600
 
-    raw =
-        f"{message_id}:{expire}"
+    raw = f"{message_id}:{expire}"
 
-    signature =
-        hmac.new(
-            SECRET_KEY.encode(),
-            raw.encode(),
-            hashlib.sha256
-        ).hexdigest()
+    signature = hmac.new(
+        SECRET_KEY.encode(),
+        raw.encode(),
+        hashlib.sha256
+    ).hexdigest()
 
-    token =
-        base64.urlsafe_b64encode(
-            f"{raw}:{signature}".encode()
-        ).decode()
+    token = base64.urlsafe_b64encode(
+        f"{raw}:{signature}".encode()
+    ).decode()
 
     return token
 
@@ -90,23 +67,19 @@ def verify_token(token):
 
     try:
 
-        decoded =
-            base64.urlsafe_b64decode(
-                token
-            ).decode()
+        decoded = base64.urlsafe_b64decode(
+            token
+        ).decode()
 
-        message_id, expire, sig =
-            decoded.split(':')
+        message_id, expire, sig = decoded.split(':')
 
-        raw =
-            f"{message_id}:{expire}"
+        raw = f"{message_id}:{expire}"
 
-        expected =
-            hmac.new(
-                SECRET_KEY.encode(),
-                raw.encode(),
-                hashlib.sha256
-            ).hexdigest()
+        expected = hmac.new(
+            SECRET_KEY.encode(),
+            raw.encode(),
+            hashlib.sha256
+        ).hexdigest()
 
         if expected != sig:
             return None
@@ -125,8 +98,7 @@ def verify_token(token):
 
 async def generate(request):
 
-    message_id =
-        request.query.get("id")
+    message_id = request.query.get("id")
 
     if not message_id:
 
@@ -135,18 +107,12 @@ async def generate(request):
             "message": "No ID"
         })
 
-    token =
-        generate_token(
-            message_id
-        )
+    token = generate_token(message_id)
 
-    url =
-        f"{request.scheme}://{request.host}/stream?token={token}"
+    url = f"{request.scheme}://{request.host}/stream?token={token}"
 
     return web.json_response({
-
         "status": "success",
-
         "url": url
     })
 
@@ -156,8 +122,7 @@ async def generate(request):
 
 async def stream(request):
 
-    token =
-        request.query.get("token")
+    token = request.query.get("token")
 
     if not token:
 
@@ -166,8 +131,7 @@ async def stream(request):
             text="No token"
         )
 
-    message_id =
-        verify_token(token)
+    message_id = verify_token(token)
 
     if not message_id:
 
@@ -178,126 +142,87 @@ async def stream(request):
 
     try:
 
-        message =
-            await client.get_messages(
-                CHANNEL_ID,
-                ids=message_id
-            )
+        message = await client.get_messages(
+            CHANNEL_ID,
+            ids=message_id
+        )
 
-        if (
-            not message
-            or not message.media
-        ):
+        if not message or not message.media:
 
             return web.Response(
                 status=404,
                 text="Video not found"
             )
 
-        file_size =
-            message.file.size
+        file_size = message.file.size
 
-        range_header =
-            request.headers.get(
-                'Range',
-                None
-            )
+        range_header = request.headers.get(
+            'Range',
+            None
+        )
 
         start = 0
         end = file_size - 1
 
-        # ===============================
         # RANGE SUPPORT
-        # ===============================
 
         if range_header:
 
-            bytes_range =
-                range_header.replace(
-                    'bytes=',
-                    ''
-                )
+            bytes_range = range_header.replace(
+                'bytes=',
+                ''
+            )
 
-            start_str, end_str =
-                bytes_range.split('-')
+            start_str, end_str = bytes_range.split('-')
 
-            start =
-                int(start_str)
+            start = int(start_str)
 
             if end_str:
+                end = int(end_str)
 
-                end =
-                    int(end_str)
-
-        chunk_size =
-            (end - start) + 1
+        chunk_size = (end - start) + 1
 
         headers = {
 
-            'Content-Type':
-            'video/mp4',
+            'Content-Type': 'video/mp4',
 
-            'Accept-Ranges':
-            'bytes',
+            'Accept-Ranges': 'bytes',
 
-            'Content-Length':
-            str(chunk_size),
+            'Content-Length': str(chunk_size),
 
             'Content-Range':
             f'bytes {start}-{end}/{file_size}',
 
-            'Access-Control-Allow-Origin':
-            '*',
+            'Access-Control-Allow-Origin': '*',
         }
 
-        response =
-            web.StreamResponse(
-
-                status=206,
-
-                headers=headers
-            )
-
-        await response.prepare(
-            request
+        response = web.StreamResponse(
+            status=206,
+            headers=headers
         )
+
+        await response.prepare(request)
 
         downloaded = 0
 
-        # ===============================
-        # FAST STREAM
-        # ===============================
-
         async for chunk in client.iter_download(
-
             message.media,
-
             offset=start,
-
-            request_size=1024*512
+            request_size=1024 * 512
         ):
 
             if downloaded >= chunk_size:
                 break
 
-            if (
-                downloaded + len(chunk)
-                > chunk_size
-            ):
+            if downloaded + len(chunk) > chunk_size:
 
-                chunk =
-                    chunk[
-                        :chunk_size
-                        - downloaded
-                    ]
+                chunk = chunk[
+                    :chunk_size - downloaded
+                ]
 
-            await response.write(
-                chunk
-            )
+            await response.write(chunk)
 
-            downloaded += len(
-                chunk
-            )
+            downloaded += len(chunk)
 
         return response
 
@@ -326,20 +251,11 @@ async def health(request):
 
 app = web.Application()
 
-app.router.add_get(
-    '/',
-    health
-)
+app.router.add_get('/', health)
 
-app.router.add_get(
-    '/generate',
-    generate
-)
+app.router.add_get('/generate', generate)
 
-app.router.add_get(
-    '/stream',
-    stream
-)
+app.router.add_get('/stream', stream)
 
 # ====================================
 # STARTUP
@@ -357,9 +273,7 @@ async def startup(app):
         "Telegram Client Started"
     )
 
-app.on_startup.append(
-    startup
-)
+app.on_startup.append(startup)
 
 # ====================================
 # RUN
