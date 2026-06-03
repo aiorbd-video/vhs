@@ -4,25 +4,11 @@ import hmac
 import hashlib
 import logging
 from aiohttp import web
-from pyrogram import Client, utils # utils ইম্পোর্ট করা হয়েছে
+from telethon import TelegramClient
 from dotenv import load_dotenv
 
 #.env ফাইল থেকে সিকিউর ডেটা লোড করা হচ্ছে
 load_dotenv()
-
-# ==========================================
-# 0. Pyrogram 64-bit Channel ID Bug Monkey Patch 🚀
-# ==========================================
-def get_peer_type_new(peer_id: int) -> str:
-    peer_id_str = str(peer_id)
-    if not peer_id_str.startswith("-"):
-        return "user"
-    elif peer_id_str.startswith("-100"):
-        return "channel"
-    else:
-        return "chat"
-
-utils.get_peer_type = get_peer_type_new
 
 # ==========================================
 # 1. Environment Variables & Configuration
@@ -39,11 +25,11 @@ ADMIN_PASS = os.getenv("ADMIN_PASS", "admin123")
 
 logging.basicConfig(level=logging.INFO)
 
-# ইন-মেমোরি সেশন ব্যবহার করা হচ্ছে ক্লাউড হোস্টিংয়ের জন্য
-tg_app = Client("enterprise_stream", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, in_memory=True)
+# ক্লাউড হোস্টিংয়ের জন্য ইন-মেমোরি টেম্পোরারি সেশন তৈরি করা হচ্ছে
+tg_client = TelegramClient(None, API_ID, API_HASH)
 
 # ==========================================
-# 2. Signature Generator (IP Lock Removed)
+# 2. Token & Signature Generator
 # ==========================================
 def generate_secure_signature(message_id, expire_time):
     data = f"{message_id}:{expire_time}".encode()
@@ -87,16 +73,18 @@ async def stream_handler(request):
         expire = request.query.get("expire")
         sig = request.query.get("sig")
 
-        # এখানে IP মেলানোর শর্ত বাদ দিয়ে শুধু সিগনেচার আর এক্সপায়ার টাইম দেখা হচ্ছে
+        # টোকেন ও মেয়াদ যাচাই করা হচ্ছে
         if not expire or not sig or not verify_signature(message_id, expire, sig):
             return web.Response(status=403, text="403 Forbidden: Token Expired or Invalid Signature.")
 
-        message = await tg_app.get_messages(CHANNEL_ID, message_id)
-        if not message or not (message.video or message.document):
+        # Telethon দিয়ে চ্যানেল থেকে ভিডিওর মেসেজ ফেচ করা
+        message = await tg_client.get_messages(CHANNEL_ID, ids=message_id)
+        if not message or not message.media:
             return web.Response(status=404, text="404 Not Found")
 
-        media = message.video or message.document
-        file_size = media.file_size
+        media = message.media
+        file_size = message.file.size # টেলিথন ফাইল সাইজ সরাসরি রিড করে
+
         range_header = request.headers.get("Range", "")
         start = 0
         end = file_size - 1
@@ -118,8 +106,15 @@ async def stream_handler(request):
         response = web.StreamResponse(status=206 if range_header else 200, headers=headers)
         await response.prepare(request)
 
-        async for chunk in tg_app.stream_media(message, offset=start, limit=chunk_size):
+        # টেলিথনের শক্তিশালী chunk download পদ্ধতি
+        downloaded = 0
+        async for chunk in tg_client.iter_download(media, offset=start, request_size=128 * 1024):
+            if downloaded >= chunk_size:
+                break
+            if downloaded + len(chunk) > chunk_size:
+                chunk = chunk[:chunk_size - downloaded]
             await response.write(chunk)
+            downloaded += len(chunk)
 
         return response
 
@@ -131,8 +126,9 @@ async def stream_handler(request):
 # 4. Server Initialization
 # ==========================================
 async def init_app():
-    logging.info("Starting Telegram MTProto Client...")
-    await tg_app.start()
+    logging.info("Starting Telegram Telethon Client...")
+    # বটের টোকেন দিয়ে ক্লায়েন্ট সেশন স্টার্ট করা হচ্ছে
+    await tg_client.start(bot_token=BOT_TOKEN)
     
     app = web.Application()
     app.router.add_get('/api/generate', generate_link_handler)
