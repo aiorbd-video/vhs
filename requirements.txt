@@ -1,4 +1,5 @@
-telethon
-cryptg
 aiohttp
+telethon
 python-dotenv
+cryptg
+tgcrypto
