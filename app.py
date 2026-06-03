@@ -8,9 +8,6 @@ import logging
 from aiohttp import web
 from telethon import TelegramClient
 from telethon.sessions import StringSession
-from dotenv import load_dotenv
-
-load_dotenv()
 
 # =========================================
 # CONFIG
@@ -53,14 +50,10 @@ tg = TelegramClient(
 # TOKEN
 # =========================================
 
-TOKEN_EXPIRE = 300  # 5 min
+TOKEN_EXPIRE = 300
 
 
-def create_token(
-    video_id,
-    ip,
-    ua
-):
+def create_token(video_id, ip, ua):
 
     expire = int(time.time()) + TOKEN_EXPIRE
 
@@ -79,11 +72,7 @@ def create_token(
     return token
 
 
-def verify_token(
-    token,
-    request_ip,
-    request_ua
-):
+def verify_token(token, request_ip, request_ua):
 
     try:
 
@@ -131,7 +120,7 @@ def verify_token(
         return None
 
 # =========================================
-# GENERATE STREAM LINK
+# GENERATE LINK
 # =========================================
 
 async def generate_link(request):
@@ -174,23 +163,6 @@ async def stream(request):
 
     try:
 
-        origin = (
-            request.headers.get("Origin")
-            or request.headers.get(
-                "Referer",
-                ""
-            )
-        )
-
-        if (
-            ALLOWED_ORIGIN != "*"
-            and ALLOWED_ORIGIN not in origin
-        ):
-            return web.Response(
-                status=403,
-                text="Forbidden"
-            )
-
         token = request.query.get("token")
 
         if not token:
@@ -223,23 +195,13 @@ async def stream(request):
             ids=int(video_id)
         )
 
-        if not msg:
+        if not msg or not msg.media:
             return web.Response(
                 status=404,
-                text="Message Not Found"
-            )
-
-        if not msg.media:
-            return web.Response(
-                status=404,
-                text="Media Not Found"
+                text="Video Not Found"
             )
 
         file_size = msg.file.size
-
-        # =====================================
-        # RANGE SUPPORT
-        # =====================================
 
         range_header = request.headers.get(
             "Range",
@@ -274,21 +236,18 @@ async def stream(request):
             "Content-Type": "video/mp4",
             "Accept-Ranges": "bytes",
             "Content-Length": str(chunk_size),
-            "Content-Range": (
-                f"bytes {start}-{end}/{file_size}"
-            ),
-            "Cache-Control": "private, no-cache",
-            "Access-Control-Allow-Origin": "*",
+            "Content-Range":
+            f"bytes {start}-{end}/{file_size}",
+
+            "Cache-Control":
+            "private, no-store",
+
+            "Access-Control-Allow-Origin":
+            ALLOWED_ORIGIN,
         }
 
-        status = (
-            206
-            if range_header
-            else 200
-        )
-
         response = web.StreamResponse(
-            status=status,
+            status=206 if range_header else 200,
             headers=headers
         )
 
@@ -299,7 +258,7 @@ async def stream(request):
         async for chunk in tg.iter_download(
             msg.media,
             offset=start,
-            request_size=512 * 1024
+            request_size=1024 * 1024
         ):
 
             if downloaded >= chunk_size:
@@ -331,7 +290,7 @@ async def stream(request):
         )
 
 # =========================================
-# APP
+# INIT
 # =========================================
 
 async def init():
@@ -340,9 +299,7 @@ async def init():
         bot_token=BOT_TOKEN
     )
 
-    app = web.Application(
-        client_max_size=1024**3
-    )
+    app = web.Application()
 
     app.router.add_get(
         "/generate",
@@ -357,7 +314,7 @@ async def init():
     return app
 
 # =========================================
-# MAIN
+# RUN
 # =========================================
 
 web.run_app(
