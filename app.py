@@ -135,7 +135,7 @@ async def generate(request):
     stream_url = (
         f"{request.scheme}://"
         f"{request.host}"
-        f"/video.mp4?token={token}"
+        f"/{token}/video.mp4"
     )
 
     return web.json_response({
@@ -174,7 +174,7 @@ async def options_handler(request):
 
 async def stream(request):
 
-    token = request.query.get("token")
+    token = request.match_info.get("token")
 
     if not token:
 
@@ -352,11 +352,11 @@ app.router.add_get("/", health)
 
 app.router.add_get("/generate", generate)
 
-app.router.add_get("/video.mp4", stream)
+app.router.add_get("/{token}/video.mp4", stream)
 
 app.router.add_route(
     "OPTIONS",
-    "/video.mp4",
+    "/{token}/video.mp4",
     options_handler
 )
 
