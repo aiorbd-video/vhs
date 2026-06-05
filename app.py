@@ -10,7 +10,7 @@ from telethon import TelegramClient
 from telethon.sessions import StringSession
 
 # =========================================
-# CONFIG
+# CONFIG & LOGGING
 # =========================================
 
 API_ID = int(os.getenv("API_ID", "0"))
@@ -20,7 +20,11 @@ CHANNEL_ID = int(os.getenv("CHANNEL_ID", "0"))
 SECRET_KEY = os.getenv("SECRET_KEY", "secret_key")
 PORT = int(os.getenv("PORT", "8080"))
 
-logging.basicConfig(level=logging.INFO)
+# 🟢 উন্নত লগিং সিস্টেম
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
 
 # =========================================
 # TELEGRAM CLIENT
@@ -29,7 +33,7 @@ logging.basicConfig(level=logging.INFO)
 client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
 # =========================================
-# TOKEN GENERATOR
+# TOKEN GENERATOR & VERIFIER
 # =========================================
 
 def generate_token(message_id):
@@ -38,10 +42,6 @@ def generate_token(message_id):
     signature = hmac.new(SECRET_KEY.encode(), raw_data.encode(), hashlib.sha256).hexdigest()
     token = base64.urlsafe_b64encode(f"{raw_data}:{signature}".encode()).decode()
     return token
-
-# =========================================
-# TOKEN VERIFY
-# =========================================
 
 def verify_token(token):
     try:
@@ -60,15 +60,11 @@ def verify_token(token):
         return None
 
 # =========================================
-# HEALTH
+# HEALTH & GENERATE ROUTE
 # =========================================
 
 async def health(request):
-    return web.json_response({"status": "running"})
-
-# =========================================
-# GENERATE URL
-# =========================================
+    return web.json_response({"status": "running", "client_connected": client.is_connected()})
 
 async def generate(request):
     message_id = request.query.get("id")
@@ -77,7 +73,6 @@ async def generate(request):
 
     token = generate_token(message_id)
 
-    # 🟢 Render-এর জন্য ফিক্স: জোর করে HTTPS লিংক জেনারেট করা
     scheme = request.headers.get('X-Forwarded-Proto', 'https')
     host = request.host
     if ".onrender.com" in host:
@@ -91,7 +86,7 @@ async def generate(request):
     })
 
 # =========================================
-# OPTIONS
+# OPTIONS (CORS PREFLIGHT)
 # =========================================
 
 async def options_handler(request):
@@ -99,13 +94,14 @@ async def options_handler(request):
         status=200,
         headers={
             "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Headers": "*",
-            "Access-Control-Allow-Methods": "GET, OPTIONS",
+            "Access-Control-Allow-Headers": "Origin, X-Requested-With, Content-Type, Accept, Range",
+            "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+            "Access-Control-Max-Age": "86400",
         }
     )
 
 # =========================================
-# STREAM VIDEO
+# STREAM VIDEO (ULTIMATE CORE)
 # =========================================
 
 async def stream(request):
@@ -118,6 +114,11 @@ async def stream(request):
         return web.Response(status=403, text="Invalid token")
 
     try:
+        # 🟢 UPGRADE: Auto-Reconnect Logic (Disconnection Fix)
+        if not client.is_connected():
+            logging.warning("Telegram Client Disconnected! Reconnecting automatically...")
+            await client.connect()
+
         message = await client.get_messages(CHANNEL_ID, ids=message_id)
         if not message or not message.media:
             return web.Response(status=404, text="Video not found")
@@ -142,25 +143,26 @@ async def stream(request):
             "Content-Length": str(chunk_size),
             "Content-Range": f"bytes {start}-{end}/{file_size}",
             "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Headers": "*",
-            "Access-Control-Allow-Methods": "GET, OPTIONS",
+            "Access-Control-Allow-Headers": "Origin, X-Requested-With, Content-Type, Accept, Range",
+            "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
             "Cross-Origin-Resource-Policy": "cross-origin",
             "Cache-Control": "public, max-age=3600",
         }
 
-        response = web.StreamResponse(
-            status=206 if range_header else 200,
-            headers=headers
-        )
+        # 🟢 UPGRADE: HEAD Request Handler for Safari/iOS devices
+        if request.method == "HEAD":
+            return web.Response(status=206 if range_header else 200, headers=headers)
+
+        response = web.StreamResponse(status=206 if range_header else 200, headers=headers)
         await response.prepare(request)
         current = start
 
-        # 🟢 নেটওয়ার্ক এরর ফিক্স এবং বাফারিং স্পিড আপ
         try:
+            # 1MB Chunk size for balanced speed and memory usage
             async for chunk in client.iter_download(
                 message.media,
                 offset=start,
-                request_size=1024 * 1024, # 512KB এর বদলে 1MB করা হলো ফাস্ট লোডের জন্য
+                request_size=1024 * 1024, 
             ):
                 if current > end:
                     break
@@ -172,11 +174,9 @@ async def stream(request):
                 try:
                     await response.write(chunk)
                 except (ConnectionResetError, BrokenPipeError):
-                    # ইউজার ভিডিও টেনে দিলে বা কেটে দিলে নীরবে কানেকশন ড্রপ করবে, ক্র্যাশ করবে না
-                    logging.info("User skipped/closed video. Connection closed gracefully.")
+                    logging.info("User skipped/closed video. Transfer stopped gracefully.")
                     break
                 except Exception as write_err:
-                    logging.debug(f"Write error: {write_err}")
                     break
 
                 current += len(chunk)
@@ -185,36 +185,46 @@ async def stream(request):
             return response
 
         except Exception as dl_error:
-            # টেলিগ্রাম কানেকশন কাটলেও 500 এরর দেবে না
             if "Connection lost" in str(dl_error) or "closed" in str(dl_error).lower():
-                logging.warning("Telegram connection dropped (normal during seeking).")
-                return response
+                pass # Normal behavior when user skips video
             else:
-                raise dl_error
+                logging.error(f"Download stream error: {dl_error}")
+            return response
 
     except Exception as e:
-        logging.error(f"Streaming error: {e}")
-        return web.Response(status=500, text=str(e))
+        logging.error(f"Critical streaming error: {e}")
+        return web.Response(status=500, text="Internal Server Error")
 
 # =========================================
-# STARTUP
+# STARTUP & CLEANUP
 # =========================================
 
 async def startup(app):
     logging.info("Starting Telegram Client...")
     await client.start()
-    logging.info("Telegram Client Started")
+    logging.info("Telegram Client Started Successfully!")
+
+async def cleanup(app):
+    # 🟢 UPGRADE: Graceful Shutdown
+    logging.info("Shutting down... Disconnecting Telegram Client safely.")
+    if client.is_connected():
+        await client.disconnect()
 
 # =========================================
-# APP
+# APP ROUTING
 # =========================================
 
 app = web.Application()
 app.router.add_get("/", health)
 app.router.add_get("/generate", generate)
-app.router.add_get("/{token}/video.mp4", stream)
+
+# Support both GET and HEAD for Apple devices
+app.router.add_route("GET", "/{token}/video.mp4", stream)
+app.router.add_route("HEAD", "/{token}/video.mp4", stream)
 app.router.add_route("OPTIONS", "/{token}/video.mp4", options_handler)
+
 app.on_startup.append(startup)
+app.on_cleanup.append(cleanup)
 
 # =========================================
 # RUN
